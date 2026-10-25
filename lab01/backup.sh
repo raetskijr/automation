@@ -1,7 +1,7 @@
 #!/bin/bash
 # бэкап папки в tar.gz, всё просто
 
-oops() { echo "$*"; exit 1; }
+oops() { echo "$*" >&2; exit 1; }
 
 what="$1"
 # куда кидаем, по умолчанию /backup
