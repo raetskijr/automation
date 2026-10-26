@@ -1,4 +1,4 @@
-"""Get the exchange rate for a date from the local currency service.
+"""Get the exchange rate for a date from the local currency service and save it to data/.
 
 Usage:
     python3 currency_exchange_rate.py EUR USD 2025-02-03 [--key KEY] [--url URL]
@@ -6,6 +6,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import string
 import sys
@@ -17,6 +18,8 @@ import rate_api
 # --- config ---
 # all paths are relative to this file, not to the current directory
 BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+LOG_FILE = BASE_DIR / "error.log"
 ENV_FILE = BASE_DIR / ".env"
 DEFAULT_URL = "http://localhost:8080"
 DEFAULT_KEY = "EXAMPLE_API_KEY"  # key of the local lab02prep service
@@ -41,7 +44,7 @@ def load_env(path):
 def parse_args():
     """Command line: FROM TO DATE plus --key, --url, --list."""
     parser = argparse.ArgumentParser(
-        description="Курс валют на дату через API."
+        description="Курс валют на дату через API, результат сохраняется в data/."
     )
     parser.add_argument("from_code", nargs="?", help="исходная валюта, например EUR")
     parser.add_argument("to_code", nargs="?", help="целевая валюта, например USD")
@@ -79,16 +82,36 @@ def parse_day(text):
     return day.isoformat()
 
 
-# --- errors ---
+# --- storage ---
+def make_filename(from_code, to_code, day):
+    """File name for one result, e.g. rate_EUR_USD_2025-02-03.json."""
+    return f"rate_{from_code}_{to_code}_{day}.json"
+
+
+def save_json(data, path):
+    """Dump data to path (indent 2); data/ is created on first save."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+
+
+def log_error(kind, message):
+    """Append one 'timestamp | kind | message' line to error.log."""
+    stamp = datetime.now().isoformat(timespec="seconds")
+    with open(LOG_FILE, "a", encoding="utf-8") as file:
+        file.write(f"{stamp} | {kind} | {message}\n")
+
+
 def fail(kind, message):
-    """Error exit: message to stderr, code 1."""
+    """Error exit: message to stderr, line to error.log, code 1."""
     print(f"[ОШИБКА:{kind}] {message}", file=sys.stderr)
+    log_error(kind, message)
     sys.exit(1)
 
 
 # --- entry point ---
 def main():
-    """Validate input and ask the API."""
+    """Validate input, ask the API, save the result."""
     args = parse_args()
     key, url = resolve_settings(args, load_env(ENV_FILE))
 
@@ -115,7 +138,10 @@ def main():
     except rate_api.ApiError as err:
         fail(err.kind, str(err))
 
+    path = DATA_DIR / make_filename(from_code, to_code, day)
+    save_json(data, path)
     print(f"[OK] {from_code} -> {to_code} ({day}): {data.get('rate')}")
+    print(f"[OK] сохранено: {path.relative_to(BASE_DIR)}")
 
 
 if __name__ == "__main__":
