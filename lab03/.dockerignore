@@ -1,0 +1,6 @@
+# --- не нужно в образе ---
+data/
+error.log
+.env
+__pycache__/
+readme.md
