@@ -1,0 +1,21 @@
+{
+    "name": "raetski/todo-app",
+    "description": "список задач с приоритетами (lab04)",
+    "type": "project",
+    "require": {
+        "php": ">=8.3"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^12.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "Todo\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Todo\\Tests\\": "tests/"
+        }
+    }
+}

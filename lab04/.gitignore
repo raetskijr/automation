@@ -1,0 +1,9 @@
+# --- ключи ---
+secrets/*
+!secrets/.gitkeep
+# --- окружение ---
+.env
+# --- php ---
+todo-app/vendor/
+todo-app/composer.lock
+todo-app/.phpunit.cache/
