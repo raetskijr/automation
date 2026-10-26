@@ -1,0 +1,8 @@
+# --- окружение ---
+SHELL=/bin/sh
+
+# --- расписание ---
+# каждый день в 06:00: MDL -> EUR за вчера
+0 6 * * * /srv/lab03/jobs/daily.sh >> /var/log/cron.log 2>&1
+# пятница 17:00: MDL -> USD за 7 прошлых дней (пт..чт)
+0 17 * * 5 /srv/lab03/jobs/weekly.sh >> /var/log/cron.log 2>&1
