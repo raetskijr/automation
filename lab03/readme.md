@@ -1,4 +1,4 @@
-# lab03 — курс валют по расписанию (cron + docker)
+# lab03: курс валют по расписанию (cron + docker)
 
 ## Что делает
 
@@ -118,7 +118,7 @@ rates-scheduler  | [entrypoint] запуск cron
 
 Порядок как на схеме: от лога назад к cron.
 
-1. что cron пишет в лог — видно в логах контейнера (их выводит `tail -f`):
+1. что cron пишет в лог, видно в логах контейнера (их выводит `tail -f`):
 
    ```text
    $ docker compose logs -f scheduler
@@ -130,7 +130,7 @@ rates-scheduler  | [entrypoint] запуск cron
 
    или напрямую: `docker compose exec scheduler tail -n 20 /var/log/cron.log`.
 
-2. обёртка `daily.sh` вручную, точная команда из `cronjob` — строка попадает в лог:
+2. обёртка `daily.sh` вручную, точная команда из `cronjob`, строка попадает в лог:
 
    ```text
    $ docker compose exec scheduler sh -c '/srv/lab03/jobs/daily.sh >> /var/log/cron.log 2>&1'
@@ -141,7 +141,7 @@ rates-scheduler  | [entrypoint] запуск cron
 
    Ошибка ожидаемая, см. «Даты и ошибка диапазона». `weekly.sh` с реальной датой даёт 7 таких строк (2026-10-19..2026-10-25) и код выхода 1.
 
-3. та же обёртка с датой отсчёта из 2025 года — 7 курсов за 2025-09-05..2025-09-11:
+3. та же обёртка с датой отсчёта из 2025 года даёт 7 курсов за 2025-09-05..2025-09-11:
 
    ```text
    $ docker compose exec scheduler sh -c '/srv/lab03/jobs/weekly.sh 2025-09-12 >> /var/log/cron.log 2>&1'
@@ -192,7 +192,7 @@ rates-scheduler  | [entrypoint] запуск cron
    1 cron -f
    ```
 
-   `cron -f` — pid 1, `tail -f` — фоновая функция `monitor_logs` (поэтому в её родителе виден `entrypoint.sh`). `STIME` в UTC.
+   `cron -f` имеет pid 1, `tail -f` запускает фоновая функция `monitor_logs` (поэтому в её родителе виден `entrypoint.sh`). `STIME` в UTC.
 
 6. часовой пояс, по которому cron считает 06:00 и 17:00:
 

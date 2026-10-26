@@ -20,7 +20,7 @@ final class TaskListTest extends TestCase
         $this->list = new TaskList();
         $this->list->add(new Task('полить цветы', Priority::Low));
         $this->list->add(new Task('купить хлеб'));
-        $this->list->add(new Task('сдать лабу', Priority::High));
+        $this->list->add(new Task('сдать лабораторную', Priority::High));
     }
 
     /** @param list<Task> $tasks */
@@ -52,7 +52,7 @@ final class TaskListTest extends TestCase
 
         // --- проверка ---
         $this->assertSame(['купить хлеб'], self::titles($this->list->done()));
-        $this->assertSame(['полить цветы', 'сдать лабу'], self::titles($this->list->pending()));
+        $this->assertSame(['полить цветы', 'сдать лабораторную'], self::titles($this->list->pending()));
     }
 
     public function testCompleteUnknownThrows(): void
@@ -74,7 +74,7 @@ final class TaskListTest extends TestCase
 
         // --- проверка ---
         $this->assertSame(
-            ['сдать лабу', 'купить хлеб', 'ответить на почту', 'полить цветы'],
+            ['сдать лабораторную', 'купить хлеб', 'ответить на почту', 'полить цветы'],
             self::titles($sorted),
         );
     }
@@ -89,7 +89,7 @@ final class TaskListTest extends TestCase
 
         // --- проверка ---
         $this->assertSame(
-            ['купить хлеб', 'сдать лабу', 'вынести мусор'],
+            ['купить хлеб', 'сдать лабораторную', 'вынести мусор'],
             self::titles($this->list->pending()),
         );
     }

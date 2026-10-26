@@ -32,7 +32,7 @@ final class TaskTest extends TestCase
     public function testMarkDone(): void
     {
         // --- дано ---
-        $task = new Task('сдать лабу', Priority::High);
+        $task = new Task('сдать лабораторную', Priority::High);
 
         // --- действие ---
         $task->markDone();

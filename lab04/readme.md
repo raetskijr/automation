@@ -1,4 +1,4 @@
-# lab04 — jenkins + ssh-agent, ci для php
+# lab04: jenkins + ssh-agent, ci для php
 
 Стенд из двух контейнеров: контроллер Jenkins и SSH-агент с PHP. Контроллер сам ничего не собирает (0 исполнителей на встроенном узле), он подключается к агенту по SSH и запускает на нём pipeline из `lab04/Jenkinsfile`: забрать репозиторий, поставить зависимости через composer, прогнать модульные тесты PHPUnit для маленького проекта `todo-app` (список задач с приоритетами).
 
@@ -133,7 +133,7 @@ Job:
    [setup] .env готов, ключ: secrets/jenkins_agent_ssh_key
    ```
 
-   То же руками, как в задании:
+   То же вручную, как в задании:
 
    ```bash
    mkdir -p secrets && cd secrets
@@ -208,7 +208,7 @@ Job:
 |---|---|---|
 | Non verifying | никогда не мешает | ключ хоста не проверяется вообще |
 | Known hosts file | строгая проверка | нужно заранее положить ключ агента в `known_hosts` контроллера, а агент генерирует новые ключи хоста при каждом пересоздании |
-| **Manually trusted (выбран)** | первый ключ доверяется сам и запоминается в узле, дальше проверяется | после пересоздания контейнера `ssh-agent` новый ключ надо подтвердить руками (см. «Проблемы») |
+| **Manually trusted (выбран)** | первый ключ доверяется сам и запоминается в узле, дальше проверяется | после пересоздания контейнера `ssh-agent` новый ключ надо подтвердить вручную (см. «Проблемы») |
 
 Выбран manually trusted: проверка есть, но ничего не надо готовить заранее. Подмену агента видно сразу, узел не подключится, пока ключ не подтвердят.
 
@@ -226,7 +226,7 @@ Job:
 | `options` | `buildDiscarder` (10 последних сборок), `disableConcurrentBuilds` |
 | `Install Dependencies` | версии php/composer в лог, `composer install --no-interaction --no-progress` в `lab04/todo-app` |
 | `Test` | `vendor/bin/phpunit --testsuite unit --colors=never` в `lab04/todo-app` |
-| `post` | `always` / `success` / `failure` — сообщения из шаблона задания |
+| `post` | `always` / `success` / `failure`: сообщения из шаблона задания |
 
 ## Проверка
 
@@ -349,9 +349,9 @@ Generating autoload files
 
 | # | проблема | симптом | решение |
 |---|---|---|---|
-| 1 | порт 8080 занят | `Bind for 0.0.0.0:8080 failed: port is already allocated` — порт держит `php_apache` из lab02prep | `docker compose -p lab02prep stop` на время лабы, потом `start` |
+| 1 | порт 8080 занят | `Bind for 0.0.0.0:8080 failed: port is already allocated`, порт занят `php_apache` из lab02prep | `docker compose -p lab02prep stop` на время работы, потом `start` |
 | 2 | нет `.env` | compose: `The "JENKINS_AGENT_SSH_PUBKEY" variable is not set. Defaulting to a blank string.`, у агента нет `authorized_keys`, в логе узла `ERROR: Server rejected the 1 private key(s) for jenkins (credentialId:jenkins-agent-ssh/method:publickey)` и `Authentication failed.` | `./setup.sh`, затем `docker compose up -d` (агент пересоздаётся с ключом) |
-| 3 | composer без zip | образ без `php-zip`: `Failed to download staabm/side-effects-detector from dist: The zip extension and unzip/7z commands are both missing, skipping.` и `Source fallback is disabled.` — `composer install` падает, `vendor/` нет | `php-zip` в `Dockerfile` (отдельный `unzip` не нужен) |
+| 3 | composer без zip | образ без `php-zip`: `Failed to download staabm/side-effects-detector from dist: The zip extension and unzip/7z commands are both missing, skipping.` и `Source fallback is disabled.`, `composer install` завершается ошибкой, `vendor/` нет | `php-zip` в `Dockerfile` (отдельный `unzip` не нужен) |
 | 4 | новый ключ хоста после пересоздания агента | `setup-sshd` генерирует ключи хоста при каждом старте нового контейнера. В логе узла `WARNING: The SSH key for this host is not currently trusted. Connections will be denied until this new key is authorised.`, затем `Key exchange was not finished, connection is closed.` и повторы каждые 15 секунд | на странице узла появляется **Trust SSH Host Key**: «Do you want to replace the SSH Host Key with fingerprint ... with the SSH Host Key with fingerprint ...?» -> Yes. Следующая попытка: `SSH host key matches key seen previously for this host. Connection will be allowed.` |
 | 5 | `phpunit.xml` с баннерами `<!-- --- ... --- -->` | сборка #1 шла с ранней версией `phpunit.xml`, ещё до того, как он попал в репозиторий в нынешнем виде: `Double hyphen within comment` и `Comment must not contain '--' (double-hyphen)`, `ERROR: script returned exit code 2`, `Finished: FAILURE` | в XML внутри комментария `--` нельзя, баннеры там переписаны как `<!-- [ наборы ] -->`, в репозиторий попала уже исправленная версия |
 
@@ -374,7 +374,7 @@ SSH Connection failed with IOException: "Key exchange was not finished, connecti
 Agent successfully connected and online
 ```
 
-Первый ключ хоста доверился сам (галочка ручной проверки снята), но ключ из `.env` был пустой — отказ на этапе аутентификации. После `setup.sh` агент пересоздан, ключ хоста у него уже другой, и узел ждал подтверждения.
+Первый ключ хоста был принят автоматически (флажок ручной проверки снят), но ключ из `.env` был пустой, поэтому отказ произошёл на этапе аутентификации. После `setup.sh` агент пересоздан, ключ хоста у него уже другой, и узел ждал подтверждения.
 
 ## Остановка
 
