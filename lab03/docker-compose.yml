@@ -1,0 +1,31 @@
+# --- сервис ---
+services:
+  scheduler:
+    build:
+      context: .
+      args:
+        # часовой пояс образа
+        TZ: Europe/Chisinau
+    container_name: rates-scheduler
+    restart: always
+    # --- окружение для скрипта ---
+    environment:
+      API_URL: http://php_apache
+      API_KEY: ${API_KEY:-EXAMPLE_API_KEY}
+    # --- данные ---
+    volumes:
+      - rates-data:/srv/lab03/data
+    # --- сеть ---
+    networks:
+      - lab02prep
+
+# --- тома ---
+volumes:
+  rates-data:
+
+# --- сети ---
+# сеть уже запущенного lab02prep (контейнер php_apache)
+networks:
+  lab02prep:
+    external: true
+    name: lab02prep_default
