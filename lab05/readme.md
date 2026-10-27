@@ -1,384 +1,534 @@
-# lab04: jenkins + ssh-agent, ci для php
+# lab05: ansible + jenkins, test-server для todo-app
 
-Стенд из двух контейнеров: контроллер Jenkins и SSH-агент с PHP. Контроллер сам ничего не собирает (0 исполнителей на встроенном узле), он подключается к агенту по SSH и запускает на нём pipeline из `lab04/Jenkinsfile`: забрать репозиторий, поставить зависимости через composer, прогнать модульные тесты PHPUnit для маленького проекта `todo-app` (список задач с приоритетами).
+## Описание проекта
 
-Слои:
+Состав стенда показан в разделе «Схема», роли контейнеров в таблице «Сервисы compose». Проект тот же, что в lab04: `todo-app`, список задач с приоритетами (`Todo\Priority`, `Todo\Task`, `Todo\TaskList`). В lab05 к нему добавлена страница: форма на 5 задач и доска из двух колонок «в работе» / «готово».
 
-| слой | что | файл |
+Три pipeline работают по цепочке:
+
+| задание | что делает | где |
 |---|---|---|
-| секреты | пара ключей агента + `.env` с публичным ключом | `setup.sh` |
-| контейнеры | контроллер, агент, тома, сеть | `docker-compose.yml`, `Dockerfile` |
-| ci | этапы сборки | `Jenkinsfile` |
-| проект | код и тесты | `todo-app/` |
+| `todo-app-ci` | composer + PHPUnit + отчёт JUnit | `ssh-agent` |
+| `test-server-ansible` | ставит на test-server Apache, PHP и виртуальный хост | `ansible-agent` |
+| `todo-app-cd` | копирует todo-app на test-server и собирает автозагрузку | `ansible-agent` |
+
+Принцип стенда: образы общие и без секретов. Ключи приходят через compose при запуске, настройки сайта лежат в `group_vars`, у каждой стадии выкладки свой плейбук.
 
 ## Схема
 
 ```text
-браузер
-  │  http://localhost:8080
-  ▼
-jenkins-controller (jenkins/jenkins:lts)          том jenkins_home -> /var/jenkins_home
-  │  ssh, ключ jenkins-agent-ssh
-  │  сеть jenkins-network (bridge), хост ssh-agent:22
-  ▼
-ssh-agent (jenkins/ssh-agent:jdk21 + php 8.4 + composer)   том jenkins_agent_volume -> /home/jenkins/agent
-  │
-  ├─ git checkout          (ветка lab04)
-  ├─ composer install      (lab04/todo-app)
-  └─ phpunit --testsuite unit
+браузер ── http://localhost:8080 ──> jenkins-controller (jenkins/jenkins:lts)
+                                        │
+                  ┌─────────────────────┴──────────────────────┐
+                  │ ssh: jenkins_agent_ssh_key                 │ ssh: jenkins_to_ansible
+                  ▼                                            ▼
+            ssh-agent                                     ansible-agent
+            (php 8.4, composer)                           (ubuntu 24.04, ansible, java 21)
+            метка php-agent                               метка ansible-runner
+                                                               │
+                                                               │ ssh: ansible_to_test (пользователь ansible)
+                                                               ▼
+браузер ── http://localhost:8090 ──────────────────────>  test-server
+                                                          (ubuntu 24.04, apache + php 8.3)
+
+все четыре контейнера: сеть jenkins-network (bridge)
+
+цепочка заданий:  todo-app-ci  ->  test-server-ansible  ->  todo-app-cd
+                  (тесты)          (сервер)                 (выкладка)
 ```
 
-| порт | кто | зачем |
+| порт на хосте | контейнер | зачем |
 |---|---|---|
-| 8080 | контроллер | веб-интерфейс |
-| 50000 | контроллер | не используется (только для inbound-агентов, здесь агент подключается по SSH) |
-| 22 | агент | только внутри `jenkins-network`, наружу не пробрасывается |
+| 8080 | jenkins-controller | веб-интерфейс Jenkins |
+| 50000 | jenkins-controller | входящие агенты, здесь не используется |
+| 8090 | test-server (80) | сайт todo-app |
+
+Порт 22 у агентов и у test-server наружу не пробрасывается, к ним ходят только по `jenkins-network`.
 
 ## Структура
 
 ```text
-lab04/
+lab05/
 ├── .gitignore
-├── Dockerfile
-├── Jenkinsfile
-├── docker-compose.yml
-├── readme.md
-├── secrets/.gitkeep
 ├── setup.sh
-└── todo-app/
-    ├── composer.json
-    ├── phpunit.xml
-    ├── src/{Priority.php, Task.php, TaskList.php}
-    └── tests/Unit/{TaskTest.php, TaskListTest.php}
+├── compose.yaml
+├── Dockerfile.ssh_agent
+├── Dockerfile.ansible_agent
+├── Dockerfile.test_server
+├── config/
+│   ├── sshd/lab05.conf
+│   └── sudoers/ansible
+├── ansible/
+│   ├── ansible.cfg
+│   ├── hosts.ini
+│   ├── group_vars/stand.yml
+│   ├── setup_test_server.yml
+│   ├── tasks/{packages.yml, php.yml, vhost.yml}
+│   ├── templates/{vhost.conf.j2, php-app.ini.j2}
+│   └── deploy/{copy.yml, configure.yml}
+├── pipelines/
+│   ├── php_build_and_test_pipeline.groovy
+│   ├── ansible_setup_pipeline.groovy
+│   └── php_deploy_pipeline.groovy
+├── todo-app/
+│   ├── composer.json, phpunit.xml
+│   ├── src/{Priority.php, Task.php, TaskList.php}
+│   ├── src/Web/TaskForm.php
+│   ├── tests/Unit/{TaskTest.php, TaskListTest.php, TaskFormTest.php}
+│   ├── public/{index.php, style.css}
+│   └── views/board.php
+├── secrets/.gitkeep
+└── readme.md
 ```
 
 | файл | зачем |
 |---|---|
-| `setup.sh` | создаёт ключи в `secrets/` (если их ещё нет) и пишет `.env` с `JENKINS_AGENT_SSH_PUBKEY` |
-| `.gitignore` | не коммитить ключи, `.env`, `vendor/`, `composer.lock`, кэш phpunit |
-| `secrets/.gitkeep` | чтобы папка была в репозитории, сами ключи не коммитятся |
-| `docker-compose.yml` | сервисы `jenkins-controller` и `ssh-agent`, тома, сеть |
-| `Dockerfile` | образ агента: `jenkins/ssh-agent:jdk21` + php + composer |
-| `Jenkinsfile` | pipeline: `Install Dependencies` -> `Test` -> `post` |
-| `todo-app/` | проект на PHP с тестами |
+| `setup.sh` | создаёт три пары ключей в `secrets/` (если их нет) и `.env` с публичным ключом для ssh-agent |
+| `.gitignore` | не коммитить ключи, `.env`, `vendor/`, `composer.lock`, кэш PHPUnit, `reports/` |
+| `compose.yaml` | 4 сервиса, секрет, 3 тома, сеть |
+| `Dockerfile.ssh_agent` | агент php из lab04 без изменений (только новое имя файла) |
+| `Dockerfile.ansible_agent` | Ubuntu + Ansible + Java 21 + sshd, агент Jenkins |
+| `Dockerfile.test_server` | Ubuntu + sshd + sudo + python3, пользователь `ansible` |
+| `config/sshd/lab05.conf` | общий для двух образов: вход только по ключу, ключи в `/etc/ssh/keys/<пользователь>.pub` |
+| `config/sudoers/ansible` | sudo без пароля для `ansible` (нужно для become) |
+| `ansible/` | настройка сервера и выкладка |
+| `pipelines/` | три pipeline |
+| `todo-app/` | проект, тесты и страница |
 
-## Проект todo-app
+## Ключи
 
-Пространство имён `Todo\`, тесты `Todo\Tests\Unit\`, автозагрузка PSR-4 через composer. PHP `>=8.3`, PHPUnit `^12.5`.
+| пара | откуда -> куда | публичная часть | закрытая часть |
+|---|---|---|---|
+| `jenkins_agent_ssh_key` | Jenkins -> ssh-agent | `.env`, переменная `JENKINS_AGENT_SSH_PUBKEY` (как в lab04) | credential `jenkins-agent-ssh` |
+| `jenkins_to_ansible` | Jenkins -> ansible-agent | bind mount `./secrets/jenkins_to_ansible.pub` -> `/etc/ssh/keys/jenkins.pub` | credential `jenkins-ansible-ssh` |
+| `ansible_to_test` | ansible-agent -> test-server | bind mount `./secrets/ansible_to_test.pub` -> `/etc/ssh/keys/ansible.pub` | compose secret -> `/run/secrets/ansible_to_test` в ansible-agent |
 
-| класс | что делает |
-|---|---|
-| `Priority` | enum: `Low = 1`, `Normal = 2`, `High = 3` |
-| `Task` | задача: название (пустое -> `InvalidArgumentException`), приоритет (по умолчанию `Normal`), `isDone()`, `markDone()` |
-| `TaskList` | список: `add()` (дубль названия -> `DomainException`), `complete()` (нет задачи -> `DomainException`), `pending()`, `done()`, `byPriority()` (сначала High, внутри приоритета порядок добавления), `count()` (`Countable`) |
-
-| файл | тесты |
-|---|---|
-| `tests/Unit/TaskTest.php` | `testNewTaskIsNotDone`, `testDefaultPriorityIsNormal`, `testMarkDone`, `testEmptyTitleThrows` |
-| `tests/Unit/TaskListTest.php` | `testCount`, `testDuplicateTitleThrows`, `testCompleteMovesTaskToDone`, `testCompleteUnknownThrows`, `testByPriorityHighFirst`, `testPendingKeepsInsertionOrder` |
-
-В `TaskListTest` фикстура `setUp()` кладёт в список 3 задачи разного приоритета, каждый тест начинает с чистого списка. В `phpunit.xml` один набор `unit` (`tests/Unit`), его и запускает pipeline.
-
-Почему нет `composer.lock`: проект учебный, зависимость одна (`phpunit/phpunit ^12.5`), диапазон узкий, поэтому версии подбирает сам composer при первой сборке. Lock создаётся в рабочей папке агента и остаётся там до очистки workspace: во второй сборке composer уже ставит из него (`Nothing to install, update or remove`).
+Все ключи ed25519 без пароля, их делает `setup.sh`. Ни один ключ не копируется в образ: образ можно пересобрать или отдать кому угодно, а смена ключей не требует сборки, хватает `docker compose up -d`.
 
 ## Настройки
 
-| что | где | значение |
-|---|---|---|
-| `JENKINS_AGENT_SSH_PUBKEY` | `.env` (создаёт `setup.sh`) | содержимое `secrets/jenkins_agent_ssh_key.pub` |
-| php | `Dockerfile`, apt | `php-cli php-xml php-mbstring php-zip` -> PHP 8.4.27 |
-| composer | `Dockerfile`, официальный установщик | 2.10.3 в `/usr/local/bin/composer` |
-| phpunit | `todo-app/composer.json` | `^12.5` -> 12.5.40 |
-| jenkins | `docker-compose.yml` | `jenkins/jenkins:lts` (2.580.1) |
+Сервисы compose:
 
-Узел:
+| сервис | образ | порты | тома | ключи |
+|---|---|---|---|---|
+| `jenkins-controller` | `jenkins/jenkins:lts` | 8080, 50000 | `jenkins_home` | хранит закрытые ключи 1 и 2 как credentials |
+| `ssh-agent` | `Dockerfile.ssh_agent` | нет | `jenkins_agent_volume` | `JENKINS_AGENT_SSH_PUBKEY` из `.env` |
+| `ansible-agent` | `Dockerfile.ansible_agent` | нет | `ansible_agent_work` | `jenkins.pub` (bind mount), секрет `ansible_to_test` |
+| `test-server` | `Dockerfile.test_server` | 8090 -> 80 | нет | `ansible.pub` (bind mount) |
 
-| поле | значение |
+Версия Ubuntu для двух новых образов записана один раз: якорь `x-ubuntu` в `compose.yaml` передаётся в `build.args`, в Dockerfile это `ARG UBUNTU_VERSION`.
+
+Узлы Jenkins:
+
+| узел | метка | хост | ключ | проверка ключа хоста |
+|---|---|---|---|---|
+| `ssh-agent1` | `php-agent` | `ssh-agent` | `jenkins-agent-ssh` | Manually trusted key Verification Strategy |
+| `ansible-node` | `ansible-runner` | `ansible-agent` | `jenkins-ansible-ssh` | Manually trusted key Verification Strategy |
+
+У обоих: Remote root directory `/home/jenkins/agent`, 1 исполнитель, Launch agents via SSH. У Built-In Node 0 исполнителей.
+
+Credentials (Global, тип SSH Username with private key, Username `jenkins`):
+
+| ID | содержимое |
 |---|---|
-| Name | `ssh-agent1` |
-| Type | Permanent Agent |
-| Number of executors | 1 |
-| Remote root directory | `/home/jenkins/agent` |
-| Labels | `php-agent` |
-| Usage | Use this node as much as possible |
-| Launch method | Launch agents via SSH |
-| Host | `ssh-agent` (имя сервиса в `jenkins-network`) |
-| Credentials | `jenkins-agent-ssh` (jenkins) |
-| Host Key Verification Strategy | Manually trusted key Verification Strategy, галочка «Require manual verification of initial connection» снята |
-| Port | 22 (Advanced, по умолчанию) |
-| Availability | Keep this agent online as much as possible |
+| `jenkins-agent-ssh` | `secrets/jenkins_agent_ssh_key` |
+| `jenkins-ansible-ssh` | `secrets/jenkins_to_ansible` |
 
-Job:
+Задания (все: Pipeline script from SCM, Git, `https://github.com/raetskijr/automation.git`, ветка `*/main`):
 
-| поле | значение |
-|---|---|
-| имя | `todo-app-ci` |
-| тип | Pipeline |
-| Definition | Pipeline script from SCM |
-| SCM | Git |
-| Repository URL | `https://github.com/raetskijr/automation.git` (публичный, credentials не нужны) |
-| Branch Specifier | `*/lab04` |
-| Script Path | `lab04/Jenkinsfile` |
+| задание | Script Path | агент | стадии |
+|---|---|---|---|
+| `todo-app-ci` | `lab05/pipelines/php_build_and_test_pipeline.groovy` | `php-agent` | clone, deps, test, report |
+| `test-server-ansible` | `lab05/pipelines/ansible_setup_pipeline.groovy` | `ansible-runner` | clone, playbook |
+| `todo-app-cd` | `lab05/pipelines/php_deploy_pipeline.groovy` | `ansible-runner` | clone, copy, configure |
 
 ## Запуск
 
-1. ключи и `.env`:
+```bash
+cd lab05
+./setup.sh                       # ключи + .env
+docker compose up -d --build     # 4 контейнера
+docker compose ps
+docker compose exec jenkins-controller cat /var/jenkins_home/secrets/initialAdminPassword
+```
 
-   ```text
-   $ ./setup.sh
-   Generating public/private ed25519 key pair.
-   Your identification has been saved in secrets/jenkins_agent_ssh_key
-   Your public key has been saved in secrets/jenkins_agent_ssh_key.pub
-   ...
-   [setup] .env готов, ключ: secrets/jenkins_agent_ssh_key
-   ```
-
-   То же вручную, как в задании:
-
-   ```bash
-   mkdir -p secrets && cd secrets
-   ssh-keygen -f jenkins_agent_ssh_key        # пароль пустой
-   cd ..
-   echo "JENKINS_AGENT_SSH_PUBKEY=$(cat secrets/jenkins_agent_ssh_key.pub)" > .env
-   ```
-
-2. освободить порт 8080: его держит `php_apache` из lab02prep.
-
-   ```bash
-   docker compose -p lab02prep stop
-   ```
-
-3. поднять стенд:
-
-   ```bash
-   docker compose up -d --build
-   ```
-
-4. проверить:
-
-   ```bash
-   docker compose ps
-   ```
-
-   Должны быть `jenkins-controller` (порты 8080, 50000) и `ssh-agent` (22/tcp), оба `Up`.
+Порт 8080 должен быть свободен. У меня его держит `php_apache` из lab02prep, на время работы: `docker compose -p lab02prep stop`.
 
 ## Jenkins
 
 ### контроллер
 
-1. пароль разблокировки:
-
-   ```bash
-   docker compose exec jenkins-controller cat /var/jenkins_home/secrets/initialAdminPassword
-   ```
-
-2. http://localhost:8080 -> вставить пароль.
-3. Customize Jenkins -> **Select plugins to install** -> **None**, затем отметить только:
+1. http://localhost:8080 -> пароль из `initialAdminPassword`.
+2. Customize Jenkins -> Select plugins to install -> None, затем отметить:
 
    | плагин | id | зачем |
    |---|---|---|
-   | Pipeline | `workflow-aggregator` | job типа Pipeline и Jenkinsfile |
-   | Git | `git` | checkout репозитория |
-   | SSH Build Agents | `ssh-slaves` | запуск агента по SSH |
-   | Credentials | `credentials` | хранение ключа |
+   | Docker | `docker-plugin` | требование задания (облачные агенты в контейнерах, здесь не настраивался) |
+   | Docker Pipeline | `docker-workflow` | требование задания (`docker` в pipeline, здесь не используется) |
+   | GitHub Integration | `github-pullrequest` | требование задания (запуск заданий по webhook из GitHub) |
+   | SSH Agent | `ssh-agent` | требование задания (шаг `sshagent` в pipeline) |
+   | SSH Build Agents | `ssh-slaves` | запуск обоих агентов по SSH |
+   | Git | `git` | шаг `git` и Pipeline script from SCM |
+   | Pipeline | `workflow-aggregator` | задания вида Pipeline |
+   | JUnit | `junit` | шаг `junit` в стадии report |
 
-   С зависимостями получилось 59 плагинов.
-4. создать администратора, Jenkins URL оставить `http://localhost:8080/`.
-5. Manage Jenkins -> Nodes -> Built-In Node -> Configure -> **Number of executors = 0**. Теперь любая сборка может идти только на агенте.
-6. Manage Jenkins -> Plugins -> Installed: проверить, что **SSH Build Agents** есть.
+   С зависимостями получилось 86 плагинов.
+3. Создать администратора, Jenkins URL оставить.
+4. Manage Jenkins -> Nodes -> Built-In Node -> Configure -> Number of executors = 0.
 
-### агент
+### агенты
 
-1. Manage Jenkins -> Credentials -> System -> Global credentials -> Add Credentials:
+`ssh-agent1` настроен так же, как в lab04: credential `jenkins-agent-ssh`, узел `ssh-agent1`, метка `php-agent`, хост `ssh-agent`.
 
-   | поле | значение |
-   |---|---|
-   | Kind | SSH Username with private key |
-   | ID | `jenkins-agent-ssh` |
-   | Username | `jenkins` |
-   | Private Key | Enter directly -> содержимое `secrets/jenkins_agent_ssh_key` |
-   | Passphrase | пусто |
+`ansible-node` новый:
 
-2. Manage Jenkins -> Nodes -> New Node -> `ssh-agent1`, Permanent Agent -> поля из таблицы «Узел» выше.
-3. Save -> узел подключается сам, в логе узла (`ssh-agent1` -> Log) в конце `Agent successfully connected and online`.
+1. Manage Jenkins -> Credentials -> Global -> Add Credentials: SSH Username with private key, ID `jenkins-ansible-ssh`, Username `jenkins`, Private Key -> Enter directly -> `secrets/jenkins_to_ansible`.
+2. Manage Jenkins -> Nodes -> New Node -> `ansible-node`, Permanent Agent, поля из таблицы «Узлы Jenkins».
+3. Save. Первый ключ хоста принимается сам, в логе узла:
 
-Стратегия проверки ключа хоста:
+   ```text
+   [SSH] Opening SSH connection to ansible-agent:22.
+   [SSH] The SSH key with fingerprint SHA256:YVUhlFUpsX3k3AJDX+IALNSwRkcBMJNJ87ki3k9SMy4= has been automatically trusted for connections to this machine.
+   [SSH] Authentication successful.
+   ...
+   Agent successfully connected and online
+   ```
 
-| вариант | плюс | минус |
+Что внутри `Dockerfile.ansible_agent`:
+
+| блок | что | зачем |
 |---|---|---|
-| Non verifying | никогда не мешает | ключ хоста не проверяется вообще |
-| Known hosts file | строгая проверка | нужно заранее положить ключ агента в `known_hosts` контроллера, а агент генерирует новые ключи хоста при каждом пересоздании |
-| **Manually trusted (выбран)** | первый ключ доверяется сам и запоминается в узле, дальше проверяется | после пересоздания контейнера `ssh-agent` новый ключ надо подтвердить вручную (см. «Проблемы») |
+| база | `ubuntu:${UBUNTU_VERSION}`, по умолчанию 24.04 | требование задания: Ubuntu |
+| пакеты | `openssh-server`, `openjdk-21-jre-headless` | Jenkins подключается по SSH и запускает `remoting.jar` на Java 21 (как у контроллера) |
+| | `git` | стадия clone |
+| | `openssh-client`, `rsync` | Ansible ходит на test-server по SSH, `synchronize` запускает `rsync` и здесь |
+| | `software-properties-common`, `gpg-agent` | нужны для `add-apt-repository` |
+| ansible | PPA `ppa:ansible/ansible`: `ansible` 14.5.0, `ansible-core` 2.21.5 | в apt Ubuntu 24.04 версия старее (core 2.16), в полном пакете уже есть `ansible.posix` для `synchronize` |
+| пользователь | `jenkins`, каталог `/home/jenkins/agent` | под ним работает агент |
+| sshd | `config/sshd/lab05.conf`, `/run/sshd`, `/etc/ssh/keys` | ключ `jenkins.pub` монтирует compose |
+| запуск | `sshd -D -e` | sshd в переднем плане, лог в `docker compose logs` |
 
-Выбран manually trusted: проверка есть, но ничего не надо готовить заранее. Подмену агента видно сразу, узел не подключится, пока ключ не подтвердят.
+### pipelines
 
-### pipeline
-
-1. New Item -> `todo-app-ci` -> Pipeline.
-2. Pipeline -> Definition: Pipeline script from SCM, поля из таблицы «Job» выше.
-3. Save -> Build Now.
-
-Что делает `Jenkinsfile`:
+Общее у всех трёх:
 
 | блок | что |
 |---|---|
-| `agent { label 'php-agent' }` | вся сборка на узле с меткой `php-agent`, то есть на `ssh-agent1` |
-| `options` | `buildDiscarder` (10 последних сборок), `disableConcurrentBuilds` |
-| `Install Dependencies` | версии php/composer в лог, `composer install --no-interaction --no-progress` в `lab04/todo-app` |
-| `Test` | `vendor/bin/phpunit --testsuite unit --colors=never` в `lab04/todo-app` |
-| `post` | `always` / `success` / `failure`: сообщения из шаблона задания |
+| `options` | `buildDiscarder` (10 сборок), `disableConcurrentBuilds`, `skipDefaultCheckout` (клонирует стадия clone) |
+| `parameters` | `REPO_URL` (по умолчанию GitHub), `BRANCH` (по умолчанию `main`) |
+| стадия `clone` | `git url: params.REPO_URL, branch: params.BRANCH` |
+
+`php_build_and_test_pipeline.groovy` (это `Jenkinsfile` из lab04, перенесён и дополнен):
+
+| стадия | команда |
+|---|---|
+| clone | `git ...` |
+| deps | `php -v \| head -n 1 && composer --version`, `composer install --no-interaction --no-progress` |
+| test | `vendor/bin/phpunit --testsuite unit --colors=never --log-junit reports/junit.xml` |
+| report | `junit "lab05/todo-app/reports/junit.xml"` |
+
+`ansible_setup_pipeline.groovy`:
+
+| стадия | команда |
+|---|---|
+| clone | `git ...` |
+| playbook | в `lab05/ansible`: `ansible --version \| head -n 1`, `ansible-playbook setup_test_server.yml` |
+
+`php_deploy_pipeline.groovy`:
+
+| стадия | команда |
+|---|---|
+| clone | `git ...` |
+| copy | в `lab05/ansible`: `ansible-playbook deploy/copy.yml` |
+| configure | в `lab05/ansible`: `ansible-playbook deploy/configure.yml` |
+
+Флагов у `ansible-playbook` нет: инвентарь берётся из `ansible.cfg`, ключ и become из `group_vars/stand.yml`.
+
+Создание задания (для каждого из трёх): New Item -> имя -> Pipeline -> Definition: Pipeline script from SCM -> поля из таблицы «Задания» -> Save -> Build Now. Блок `parameters` Jenkins читает только при первом запуске, поэтому первая сборка идёт со значениями по умолчанию, дальше появляется Build with Parameters.
+
+## Тестовый сервер
+
+| что | как |
+|---|---|
+| база | `ubuntu:${UBUNTU_VERSION}`, 24.04 (PHP 8.3, todo-app требует `php >=8.3`) |
+| пакеты в образе | `openssh-server`, `sudo`, `python3`: только то, что нужно Ansible для входа |
+| пользователь | `ansible` (`useradd -m`), пароля нет, вход только по ключу |
+| sudo | `config/sudoers/ansible` -> `/etc/sudoers.d/ansible`, права 0440: `ansible ALL=(ALL) NOPASSWD:ALL` |
+| sshd | `config/sshd/lab05.conf` -> `/etc/ssh/sshd_config.d/`: `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin no`, `AuthorizedKeysFile /etc/ssh/keys/%u.pub` |
+| ключ | `./secrets/ansible_to_test.pub` -> `/etc/ssh/keys/ansible.pub` (только чтение) |
+| порт | `8090:80` |
+| Apache, PHP, composer, rsync | в образе их нет, ставит Ansible |
+
+`AuthorizedKeysFile /etc/ssh/keys/%u.pub` один на оба образа: на ansible-agent это `jenkins.pub`, на test-server `ansible.pub`. Домашние каталоги пользователей не трогаются.
+
+Проверка:
+
+```bash
+docker compose exec test-server id ansible
+# uid=1001(ansible) gid=1001(ansible) groups=1001(ansible)
+docker compose exec test-server ls -l /etc/ssh/keys
+# -rw-r--r-- 1 root root  101 ... ansible.pub
+```
+
+## Ansible
+
+Роль не используется: задачи разложены по файлам и подключаются через `import_tasks`, этого хватает для одного сервера.
+
+`ansible.cfg` (читается из текущего каталога, поэтому pipeline заходит в `lab05/ansible`):
+
+| строка | смысл |
+|---|---|
+| `inventory = hosts.ini` | инвентарь без `-i` |
+| `ssh_args = -C -o ControlMaster=auto -o ControlPersist=60s` | значения Ansible по умолчанию, при своём `ssh_args` их надо повторить |
+| `-o StrictHostKeyChecking=accept-new` | ключ test-server записывается при первом входе, изменённый ключ отклоняется |
+
+`hosts.ini`: группа `stand`, в ней `test-server ansible_user=ansible`. Имя хоста = имя сервиса в `jenkins-network`.
+
+`group_vars/stand.yml`:
+
+| переменная | значение | где используется |
+|---|---|---|
+| `ansible_ssh_private_key_file` | `/run/secrets/ansible_to_test` | все плейбуки |
+| `ansible_become` | `true` | все плейбуки (apt, конфиги, `/srv`) |
+| `ansible_python_interpreter` | `/usr/bin/python3` | все плейбуки |
+| `php_version` | `"8.3"` | `php_packages`, путь conf.d в `tasks/php.yml` |
+| `php_packages` | `php8.3-cli`, `libapache2-mod-php8.3`, `php8.3-mbstring` | `tasks/packages.yml` |
+| `tool_packages` | `composer`, `unzip`, `rsync` | `tasks/packages.yml` |
+| `site_name` | `todo-app` | имена конфига vhost, логов, ini-файла |
+| `site_dir` | `/srv/todo-app` | vhost, `deploy/copy.yml`, `deploy/configure.yml` |
+| `site_src` | `{{ inventory_dir }}/../todo-app/` | `deploy/copy.yml` |
+
+`setup_test_server.yml`:
+
+| файл задач | задача | модуль |
+|---|---|---|
+| `tasks/packages.yml` | `apache: пакеты` | `ansible.builtin.apt` (`update_cache`, `cache_valid_time: 3600`) |
+| | `php: пакеты` | `ansible.builtin.apt` (`php_packages + tool_packages`) |
+| | `apache: запуск` | `ansible.builtin.service` (`state: started`) |
+| `tasks/php.yml` | `php: настройки` | `ansible.builtin.template` -> `/etc/php/8.3/apache2/conf.d/90-todo-app.ini` |
+| `tasks/vhost.yml` | `vhost: каталог` | `ansible.builtin.file` (`/srv/todo-app/public`) |
+| | `vhost: конфиг` | `ansible.builtin.template` -> `/etc/apache2/sites-available/todo-app.conf` |
+| | `vhost: включить` | `ansible.builtin.file` (`state: link` в `sites-enabled`) |
+| | `vhost: убрать 000-default` | `ansible.builtin.file` (`state: absent`) |
+
+Ссылки в `sites-enabled` делает модуль `file`: результат тот же, что у `a2ensite todo-app` и `a2dissite 000-default`, но задача сама идемпотентна. Модуль PHP для Apache включает пакет `libapache2-mod-php8.3`.
+
+Handler один: `apache: reload` (`ansible.builtin.service`, `state: reloaded`). Его вызывают `php: настройки`, `vhost: конфиг`, `vhost: включить`, `vhost: убрать 000-default`. Systemd в контейнере нет, `service` работает через `/etc/init.d/apache2`.
+
+Шаблоны:
+
+| шаблон | что внутри |
+|---|---|
+| `vhost.conf.j2` | `<VirtualHost *:80>`, `DocumentRoot /srv/todo-app/public`, `<Directory>` с `Require all granted` и `AllowOverride None`, логи `todo-app-error.log` / `todo-app-access.log` |
+| `php-app.ini.j2` | `display_errors = Off`, `date.timezone = Europe/Chisinau`, `memory_limit = 64M` |
+
+Настройки PHP лежат отдельным файлом в `conf.d`, сам `php.ini` не меняется.
+
+`deploy/copy.yml` (стадия copy):
+
+| задача | модуль | параметры |
+|---|---|---|
+| `deploy: rsync` | `ansible.posix.synchronize` | `src: site_src`, `dest: /srv/todo-app/`, `delete: true`, исключены `tests/`, `vendor/`, `.phpunit.cache/`, `phpunit.xml`, `composer.lock`, `reports/` |
+
+`deploy/configure.yml` (стадия configure):
+
+| задача | модуль | что |
+|---|---|---|
+| `deploy: автозагрузка` | `ansible.builtin.command` | `composer dump-autoload --no-dev --classmap-authoritative` в `/srv/todo-app`, `COMPOSER_ALLOW_SUPERUSER=1` |
+
+Зависимостей для работы у todo-app нет (только PHP), поэтому вместо `composer install` достаточно `dump-autoload`: `vendor/autoload.php` появляется без сети и без `composer.lock`. Права на файлы отдельно не меняются: Apache их читает и так (каталоги 755, файлы 644).
+
+## Страница todo-app
+
+| файл | роль |
+|---|---|
+| `src/Web/TaskForm.php` | `TaskForm::fromRows(array $rows): TaskList`: пустые строки пропускаются, неизвестный приоритет -> `Normal`, дубль названия пропускается, `done = 1` -> задача готова |
+| `public/index.php` | контроллер: POST -> `TaskForm::fromRows($_POST['rows'])`, GET -> пустой список, дальше `views/board.php` |
+| `views/board.php` | разметка: шапка со счётчиками, форма на 5 строк, доска «в работе» (порядок `byPriority()`, метка приоритета) и «готово» (зачёркнуто); весь вывод через `htmlspecialchars` |
+| `public/style.css` | цвета в переменных CSS, доска `grid` в две колонки, без JS |
+
+Новые тесты в `tests/Unit/TaskFormTest.php`: `testEmptyRowsAreSkipped`, `testDoneFlagAndPriorityMapped`. Всего 12 тестов.
 
 ## Проверка
 
-Сборка #2 (#1 упала, см. «Проблемы», п. 5). Вывод сокращён: строки git-checkout и служебные `[Pipeline]` частично убраны (`...`).
+Вывод сокращён (`...`), строки git с путями убраны.
+
+`todo-app-ci` #2:
 
 ```text
-Started by user admin
-...
-[Pipeline] Start of Pipeline
-[Pipeline] node
 Running on ssh-agent1 in /home/jenkins/agent/workspace/todo-app-ci
-[Pipeline] {
-[Pipeline] stage
-[Pipeline] { (Declarative: Checkout SCM)
-[Pipeline] checkout
 ...
- > git --version # 'git version 2.47.3'
+Commit message: "lab05: pipelines/*.groovy"
 ...
-Commit message: "lab04: jenkinsfile"
-...
-[Pipeline] { (Install Dependencies)
-[Pipeline] echo
-Preparing project...
-[Pipeline] dir
-Running in /home/jenkins/agent/workspace/todo-app-ci/lab04/todo-app
-[Pipeline] {
-[Pipeline] sh
 + php -v
 + head -n 1
 PHP 8.4.27 (cli) (built: Oct 21 2026 07:53:46) (NTS)
 + composer --version
 Composer version 2.10.3 2026-08-27 13:34:23
-PHP version 8.4.27 (/usr/bin/php8.4)
-Run the "diagnose" command to get more detailed diagnostics output.
-[Pipeline] sh
-+ composer install --no-interaction --no-progress
-Installing dependencies from lock file (including require-dev)
-Verifying lock file contents can be installed on current platform.
-Nothing to install, update or remove
-Generating autoload files
-23 packages you are using are looking for funding.
-Use the `composer fund` command to find out more!
 ...
-[Pipeline] { (Test)
-[Pipeline] echo
-Running tests...
-[Pipeline] dir
-Running in /home/jenkins/agent/workspace/todo-app-ci/lab04/todo-app
-[Pipeline] {
-[Pipeline] sh
-+ vendor/bin/phpunit --testsuite unit --colors=never
-PHPUnit 12.5.40 by Sebastian Bergmann and contributors.
++ composer install --no-interaction --no-progress
+...
+Lock file operations: 25 installs, 0 updates, 0 removals
+...
+Generating autoload files
+...
++ vendor/bin/phpunit --testsuite unit --colors=never --log-junit reports/junit.xml
+PHPUnit 12.5.42 by Sebastian Bergmann and contributors.
 
 Runtime:       PHP 8.4.27
-Configuration: /home/jenkins/agent/workspace/todo-app-ci/lab04/todo-app/phpunit.xml
+Configuration: /home/jenkins/agent/workspace/todo-app-ci/lab05/todo-app/phpunit.xml
 
-..........                                                        10 / 10 (100%)
+............                                                      12 / 12 (100%)
 
-Time: 00:00.001, Memory: 14.00 MB
+Time: 00:00.011, Memory: 14.00 MB
 
-OK (10 tests, 12 assertions)
+OK (12 tests, 17 assertions)
+[Pipeline] junit
+Recording test results
 ...
-[Pipeline] { (Declarative: Post Actions)
-[Pipeline] echo
-Pipeline completed.
-[Pipeline] echo
 All stages completed successfully!
-...
-[Pipeline] End of Pipeline
 Finished: SUCCESS
 ```
 
-В сборке #1 composer ставил зависимости с нуля (lock ещё не было):
+В Test Result сборки: 12 passed, 0 failed, 0 skipped.
+
+`test-server-ansible` #2 (сервер только что создан, на нём нет Apache):
 
 ```text
-+ composer install --no-interaction --no-progress
-Composer is operating significantly slower than normal because you do not have the PHP curl extension enabled.
-No composer.lock file present. Updating dependencies to latest instead of installing from lock file. See https://getcomposer.org/install for more information.
-Loading composer repositories with package information
-Updating dependencies
-Lock file operations: 25 installs, 0 updates, 0 removals
++ ansible --version
++ head -n 1
+ansible [core 2.21.5]
++ ansible-playbook setup_test_server.yml
+
+PLAY [настройка test-server] ***************************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [test-server]
+
+TASK [apache: пакеты] **********************************************************
+changed: [test-server]
+
+TASK [php: пакеты] *************************************************************
+changed: [test-server]
 ...
-  - Locking phpunit/phpunit (12.5.40)
-...
-Writing lock file
-Installing dependencies from lock file (including require-dev)
-Package operations: 25 installs, 0 updates, 0 removals
-As there is no 'unzip' nor '7z' command installed zip files are being unpacked using the PHP zip extension.
-...
-  - Installing phpunit/phpunit (12.5.40): Extracting archive
-...
-Generating autoload files
+TASK [vhost: убрать 000-default] ***********************************************
+changed: [test-server]
+
+RUNNING HANDLER [apache: reload] ***********************************************
+changed: [test-server]
+
+PLAY RECAP *********************************************************************
+test-server                : ok=10   changed=9    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+test-server настроен.
+Finished: SUCCESS
 ```
 
-Два предупреждения composer (нет `php-curl`, нет `unzip`) сборке не мешают: архивы распаковывает `php-zip`, скачивание идёт без curl, на 25 пакетах это незаметно.
+`test-server-ansible` #3 (повторный запуск, ничего не изменилось, handler не вызван):
+
+```text
+PLAY RECAP *********************************************************************
+test-server                : ok=9    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+```
+
+`todo-app-cd` #2:
+
+```text
++ ansible-playbook deploy/copy.yml
+
+PLAY [deploy: копирование] *****************************************************
+...
+TASK [deploy: rsync] ***********************************************************
+changed: [test-server]
+
+PLAY RECAP *********************************************************************
+test-server                : ok=2    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+...
++ ansible-playbook deploy/configure.yml
+
+PLAY [deploy: настройка] *******************************************************
+...
+TASK [deploy: автозагрузка] ****************************************************
+changed: [test-server]
+
+PLAY RECAP *********************************************************************
+test-server                : ok=2    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+todo-app выложен на test-server.
+Finished: SUCCESS
+```
+
+Сайт:
+
+```text
+$ curl -s -i http://localhost:8090/ | head -3
+HTTP/1.1 200 OK
+...
+Server: Apache/2.4.58 (Ubuntu)
+
+$ curl -s -X POST --data-urlencode 'rows[0][title]=отчёт' -d 'rows[0][priority]=3' \
+       --data-urlencode 'rows[1][title]=почта' -d 'rows[1][priority]=1' -d 'rows[1][done]=1' \
+       http://localhost:8090/ | grep -E 'counters|badge|class="done"'
+    <p class="counters">всего 2 · готово 1</p>
+                        <span class="badge p3">высокий</span>
+                                    <li class="done">почта</li>
+
+$ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8090/composer.json
+404
+```
+
+`composer.json` не отдаётся: `DocumentRoot` указывает на `public/`, остальные файлы проекта снаружи не видны. В браузере та же страница: форма, после отправки две колонки.
 
 ## Вопросы
 
-### Преимущества Jenkins для автоматизации DevOps
+### Преимущества Ansible для настройки серверов
 
-| плюс | что даёт | в этой лабе |
+| свойство | что это дало в lab05 |
+|---|---|
+| инвентарь и группы | сервер один, но он в группе `stand`: второй сервер = одна строка в `hosts.ini`, плейбуки не меняются |
+| переменные | `group_vars/stand.yml` один на всё: его читают setup, оба deploy-плейбука и шаблон vhost |
+| handlers | Apache перезагружается только если изменился vhost или настройки PHP: в сборке #2 handler был, в #3 нет |
+| идемпотентность | повторный запуск даёт `changed=0`, плейбук можно запускать сколько угодно раз |
+| push по SSH без агента | на test-server нет агента Ansible: ansible-agent заходит туда по обычному SSH под пользователем `ansible` и сам передаёт модули |
+
+### Другие модули Ansible для управления конфигурацией
+
+| задача на сервере | модуль |
+|---|---|
+| имя хоста | `ansible.builtin.hostname` |
+| параметр ядра | `ansible.posix.sysctl` |
+| точка монтирования | `ansible.posix.mount` |
+| задание cron | `ansible.builtin.cron` |
+| правило файрвола | `ansible.builtin.iptables` |
+| перезагрузка и ожидание | `ansible.builtin.reboot` |
+| часовой пояс | `community.general.timezone` |
+
+В lab05 ни один из них не используется. Использованы `apt`, `service`, `template`, `file`, `command` и `ansible.posix.synchronize`.
+
+### Проблемы при создании плейбука и решения
+
+| что было | почему | что изменено |
 |---|---|---|
-| история сборок | у каждого запуска свой лог, статус и номер, видно, что сломалось и когда | сборка #1 упала, #2 прошла |
-| бесплатный self-hosted | работает на своём железе, без внешнего сервиса и лимитов | весь стенд локально в docker |
-| агенты | сборки идут не на контроллере, у каждого агента своё окружение | `ssh-agent` с php и composer, на контроллере 0 исполнителей |
-| pipeline as code | сборка описана в файле и живёт в git рядом с кодом, её видно в истории и в ревью | `lab04/Jenkinsfile`, job только указывает на него |
-| плагины | под каждую задачу свой плагин, ядро остаётся маленьким | тут выбраны четыре: `ssh-slaves`, `git`, `workflow-aggregator`, `credentials` |
+| первый ручной запуск `deploy/copy.yml` в контейнере агента (`docker compose exec -u jenkins ansible-agent ...`, ещё до pipeline): `sudo: rsync: command not found`, `rsync error: error in rsync protocol data stream (code 12)` | `synchronize` запускает `rsync` на обеих сторонах, на test-server он идёт через sudo (`--rsync-path='sudo -u root rsync'`), а там rsync не было | `rsync` добавлен в `tool_packages` (`group_vars/stand.yml`), его ставит `setup_test_server.yml` |
+| при запуске плейбука предупреждение: `Host 'test-server' is using the discovered Python interpreter at '/usr/bin/python3.12', but future installation of another Python interpreter could cause a different interpreter to be discovered.` | Ansible сам ищет python на сервере и предупреждает, что выбор может поменяться | `ansible_python_interpreter: /usr/bin/python3` в `group_vars/stand.yml` |
+| первые сборки всех трёх заданий упали: `Composer could not find a composer.json file`, `the playbook: setup_test_server.yml could not be found` | блок `parameters` Jenkins узнаёт только из первой сборки, она шла со значениями по умолчанию (`main` на GitHub, где lab05 ещё не было) | вторая и дальше: Build with Parameters с нужной веткой |
 
-### Какие ещё бывают агенты Jenkins
+Ограничение стенда: на Docker Desktop файл `/run/secrets/ansible_to_test` внутри контейнера виден пользователю `jenkins` как его собственный (права 600). На Linux у bind mount остаётся uid владельца на хосте, и `jenkins` (uid 1001) сможет прочитать ключ, только если uid совпадает или права шире.
 
-| тип | кто подключается | пример |
-|---|---|---|
-| встроенный узел (built-in node) | никто, сборка идёт в процессе контроллера | исполнители Built-In Node (здесь выставлено 0) |
-| постоянный SSH-агент | контроллер -> агент по SSH | `ssh-agent1` в этой лабе (`jenkins/ssh-agent`) |
-| inbound-агент | агент сам подключается к контроллеру на порт 50000 | образ `jenkins/inbound-agent`, для агента за NAT / без входящего ssh |
-| облачный агент: Docker / Kubernetes | контроллер создаёт агента на время сборки и удаляет после | плагины Docker, Kubernetes (pod на каждую сборку) |
-| контейнер внутри pipeline | шаг сборки запускается в контейнере на уже имеющемся агенте | `agent { docker { image 'php:8.4-cli' } }` (нужен плагин Docker Pipeline и docker на агенте) |
+## Версии
 
-### Проблемы при настройке и решения
-
-| # | проблема | симптом | решение |
-|---|---|---|---|
-| 1 | порт 8080 занят | `Bind for 0.0.0.0:8080 failed: port is already allocated`, порт занят `php_apache` из lab02prep | `docker compose -p lab02prep stop` на время работы, потом `start` |
-| 2 | нет `.env` | compose: `The "JENKINS_AGENT_SSH_PUBKEY" variable is not set. Defaulting to a blank string.`, у агента нет `authorized_keys`, в логе узла `ERROR: Server rejected the 1 private key(s) for jenkins (credentialId:jenkins-agent-ssh/method:publickey)` и `Authentication failed.` | `./setup.sh`, затем `docker compose up -d` (агент пересоздаётся с ключом) |
-| 3 | composer без zip | образ без `php-zip`: `Failed to download staabm/side-effects-detector from dist: The zip extension and unzip/7z commands are both missing, skipping.` и `Source fallback is disabled.`, `composer install` завершается ошибкой, `vendor/` нет | `php-zip` в `Dockerfile` (отдельный `unzip` не нужен) |
-| 4 | новый ключ хоста после пересоздания агента | `setup-sshd` генерирует ключи хоста при каждом старте нового контейнера. В логе узла `WARNING: The SSH key for this host is not currently trusted. Connections will be denied until this new key is authorised.`, затем `Key exchange was not finished, connection is closed.` и повторы каждые 15 секунд | на странице узла появляется **Trust SSH Host Key**: «Do you want to replace the SSH Host Key with fingerprint ... with the SSH Host Key with fingerprint ...?» -> Yes. Следующая попытка: `SSH host key matches key seen previously for this host. Connection will be allowed.` |
-| 5 | `phpunit.xml` с баннерами `<!-- --- ... --- -->` | сборка #1 шла с ранней версией `phpunit.xml`, ещё до того, как он попал в репозиторий в нынешнем виде: `Double hyphen within comment` и `Comment must not contain '--' (double-hyphen)`, `ERROR: script returned exit code 2`, `Finished: FAILURE` | в XML внутри комментария `--` нельзя, баннеры там переписаны как `<!-- [ наборы ] -->`, в репозиторий попала уже исправленная версия |
-
-Лог узла для п. 2 и п. 4 (сокращён):
-
-```text
-[10/26/26 07:41:25] [SSH] Opening SSH connection to ssh-agent:22.
-[10/26/26 07:41:25] [SSH] The SSH key with fingerprint SHA256:zgt0Q33btH7u6glSrRgv4iV2TLFe4GShEg0SYYsraow= has been automatically trusted for connections to this machine.
-ERROR: Server rejected the 1 private key(s) for jenkins (credentialId:jenkins-agent-ssh/method:publickey)
-[10/26/26 07:41:25] [SSH] Authentication failed.
-...
-[10/26/26 07:41:44] [SSH] Opening SSH connection to ssh-agent:22.
-[10/26/26 07:41:44] [SSH] WARNING: The SSH key for this host is not currently trusted. Connections will be denied until this new key is authorised.
-Key exchange was not finished, connection is closed.
-SSH Connection failed with IOException: "Key exchange was not finished, connection is closed.", retrying in 15 seconds. There are 10 more retries left.
-...
-[10/26/26 07:42:14] [SSH] SSH host key matches key seen previously for this host. Connection will be allowed.
-[10/26/26 07:42:14] [SSH] Authentication successful.
-...
-Agent successfully connected and online
-```
-
-Первый ключ хоста был принят автоматически (флажок ручной проверки снят), но ключ из `.env` был пустой, поэтому отказ произошёл на этапе аутентификации. После `setup.sh` агент пересоздан, ключ хоста у него уже другой, и узел ждал подтверждения.
+| компонент | версия |
+|---|---|
+| Jenkins | 2.580.1 (Java 21) |
+| ansible / ansible-core | 14.5.0 / 2.21.5 (PPA), `ansible.posix` 2.2.2 |
+| ansible-agent | Ubuntu 24.04, OpenJDK 21.0.12, git 2.43.0, rsync 3.2.7 |
+| test-server | Ubuntu 24.04, Apache 2.4.58, PHP 8.3.6, composer 2.7.1, OpenSSH 9.6p1 |
+| ssh-agent | PHP 8.4.27, Composer 2.10.3, PHPUnit 12.5.42 |
 
 ## Остановка
 
 ```bash
-docker compose down -v --rmi local   # всё: контейнеры, тома, образ агента
-docker compose -p lab02prep start    # вернуть php_apache на 8080
+docker compose down -v --rmi local
 ```
+
+Удаляются контейнеры, тома (в том числе настройки Jenkins) и три собранных образа. Ключи в `secrets/` и `.env` остаются, при следующем запуске `setup.sh` их не пересоздаёт.
