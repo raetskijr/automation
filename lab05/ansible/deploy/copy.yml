@@ -1,0 +1,17 @@
+# --- deploy, стадия copy: файлы todo-app -> test-server ---
+- name: "deploy: копирование"
+  hosts: stand
+  tasks:
+    # rsync на обеих сторонах, delete: убрать с сервера то, чего нет в репозитории
+    - name: "deploy: rsync"
+      ansible.posix.synchronize:
+        src: "{{ site_src }}"
+        dest: "{{ site_dir }}/"
+        delete: true
+        rsync_opts:
+          - "--exclude=tests/"
+          - "--exclude=vendor/"
+          - "--exclude=.phpunit.cache/"
+          - "--exclude=phpunit.xml"
+          - "--exclude=composer.lock"
+          - "--exclude=reports/"

@@ -1,0 +1,12 @@
+# --- deploy, стадия configure: автозагрузка на test-server ---
+- name: "deploy: настройка"
+  hosts: stand
+  tasks:
+    # зависимостей для работы нет (только php), поэтому не install, а dump-autoload:
+    # vendor/autoload.php появляется без сети и без composer.lock
+    - name: "deploy: автозагрузка"
+      ansible.builtin.command:
+        cmd: composer dump-autoload --no-dev --classmap-authoritative
+        chdir: "{{ site_dir }}"
+      environment:
+        COMPOSER_ALLOW_SUPERUSER: "1"

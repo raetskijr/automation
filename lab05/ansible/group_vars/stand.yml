@@ -2,6 +2,8 @@
 # ключ приходит из compose secrets, become для всех плейбуков группы
 ansible_ssh_private_key_file: /run/secrets/ansible_to_test
 ansible_become: true
+# python на сервере задан явно, иначе предупреждение interpreter discovery
+ansible_python_interpreter: /usr/bin/python3
 
 # --- пакеты ---
 php_version: "8.3"
@@ -9,9 +11,11 @@ php_packages:
   - "php{{ php_version }}-cli"
   - "libapache2-mod-php{{ php_version }}"
   - "php{{ php_version }}-mbstring"
+# rsync: нужен на сервере для deploy/copy.yml (synchronize)
 tool_packages:
   - composer
   - unzip
+  - rsync
 
 # --- сайт ---
 site_name: todo-app
