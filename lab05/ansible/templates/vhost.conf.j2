@@ -1,0 +1,13 @@
+# --- шаблон ansible: не править на сервере ---
+<VirtualHost *:80>
+    DocumentRoot {{ site_dir }}/public
+
+    <Directory {{ site_dir }}/public>
+        Require all granted
+        AllowOverride None
+    </Directory>
+
+    # --- логи ---
+    ErrorLog ${APACHE_LOG_DIR}/{{ site_name }}-error.log
+    CustomLog ${APACHE_LOG_DIR}/{{ site_name }}-access.log combined
+</VirtualHost>

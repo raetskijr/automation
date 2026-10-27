@@ -1,0 +1,33 @@
+# --- база: версия ubuntu задаётся в compose.yaml (x-ubuntu) ---
+ARG UBUNTU_VERSION=24.04
+FROM ubuntu:${UBUNTU_VERSION}
+
+# --- пакеты ---
+# sshd + java 21: сюда подключается jenkins (агент по ssh)
+# git: стадия clone, ssh-клиент: ansible -> test-server
+# rsync: ansible.posix.synchronize запускает rsync и на этой машине
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      openssh-server openssh-client git rsync openjdk-21-jre-headless ca-certificates \
+      software-properties-common gpg-agent \
+ && rm -rf /var/lib/apt/lists/*
+
+# --- ansible из ppa проекта (в ubuntu 24.04 своя версия старее) ---
+RUN add-apt-repository -y ppa:ansible/ansible \
+ && apt-get install -y --no-install-recommends ansible \
+ && rm -rf /var/lib/apt/lists/*
+
+# --- пользователь ---
+# jenkins: под ним работает агент, рабочий каталог /home/jenkins/agent
+RUN useradd -m -s /bin/bash jenkins \
+ && install -d -o jenkins -g jenkins /home/jenkins/agent
+
+# --- sshd ---
+# конфиг общий с test-server, ключи монтируются в /etc/ssh/keys
+# /run/sshd: без него sshd -D не стартует
+COPY config/sshd/lab05.conf /etc/ssh/sshd_config.d/lab05.conf
+RUN mkdir -p /run/sshd /etc/ssh/keys
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e"]

@@ -1,0 +1,18 @@
+# --- test-server: apache + php + vhost ---
+# задачи разложены по tasks/*.yml, переменные: group_vars/stand.yml
+- name: настройка test-server
+  hosts: stand
+  tasks:
+    - name: пакеты
+      ansible.builtin.import_tasks: tasks/packages.yml
+    - name: php
+      ansible.builtin.import_tasks: tasks/php.yml
+    - name: vhost
+      ansible.builtin.import_tasks: tasks/vhost.yml
+
+  # --- handlers ---
+  handlers:
+    - name: "apache: reload"
+      ansible.builtin.service:
+        name: apache2
+        state: reloaded

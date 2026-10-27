@@ -1,0 +1,88 @@
+# --- общие параметры сборки ---
+x-ubuntu: &ubuntu
+  UBUNTU_VERSION: "24.04"
+
+# --- сервисы ---
+services:
+  # --- контроллер ---
+  jenkins-controller:
+    image: jenkins/jenkins:lts
+    container_name: jenkins-controller
+    restart: always
+    ports:
+      - "8080:8080"     # веб-интерфейс
+      - "50000:50000"   # входящие агенты (здесь не используется)
+    volumes:
+      - jenkins_home:/var/jenkins_home
+    networks:
+      - jenkins-network
+
+  # --- агент php ---
+  ssh-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.ssh_agent
+    container_name: ssh-agent
+    restart: always
+    environment:
+      # ключ из .env (создаёт setup.sh)
+      - JENKINS_AGENT_SSH_PUBKEY=${JENKINS_AGENT_SSH_PUBKEY}
+    volumes:
+      - jenkins_agent_volume:/home/jenkins/agent
+    depends_on:
+      - jenkins-controller
+    networks:
+      - jenkins-network
+
+  # --- агент ansible ---
+  ansible-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.ansible_agent
+      args: *ubuntu
+    container_name: ansible-agent
+    restart: always
+    volumes:
+      # ключ jenkins -> ansible-agent (публичная часть)
+      - ./secrets/jenkins_to_ansible.pub:/etc/ssh/keys/jenkins.pub:ro
+      - ansible_agent_work:/home/jenkins/agent
+    secrets:
+      # ключ ansible-agent -> test-server, внутри /run/secrets/ansible_to_test
+      - ansible_to_test
+    depends_on:
+      - jenkins-controller
+      - test-server
+    networks:
+      - jenkins-network
+
+  # --- тестовый сервер ---
+  test-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.test_server
+      args: *ubuntu
+    container_name: test-server
+    restart: always
+    volumes:
+      # ключ ansible-agent -> test-server (публичная часть)
+      - ./secrets/ansible_to_test.pub:/etc/ssh/keys/ansible.pub:ro
+    ports:
+      - "8090:80"       # сайт todo-app
+    networks:
+      - jenkins-network
+
+# --- секреты ---
+secrets:
+  ansible_to_test:
+    file: ./secrets/ansible_to_test
+
+# --- тома ---
+volumes:
+  jenkins_home:
+  jenkins_agent_volume:
+  ansible_agent_work:
+
+# --- сеть ---
+networks:
+  jenkins-network:
+    driver: bridge

@@ -1,0 +1,25 @@
+# --- база: версия ubuntu задаётся в compose.yaml (x-ubuntu) ---
+ARG UBUNTU_VERSION=24.04
+FROM ubuntu:${UBUNTU_VERSION}
+
+# --- пакеты ---
+# только то, что нужно ansible для входа: sshd, sudo (become), python3
+# apache, php, composer ставит playbook setup_test_server.yml
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-server sudo python3 \
+ && rm -rf /var/lib/apt/lists/*
+
+# --- пользователь ---
+# ansible: вход по ключу, sudo без пароля из config/sudoers/ansible
+RUN useradd -m -s /bin/bash ansible
+COPY --chmod=0440 config/sudoers/ansible /etc/sudoers.d/ansible
+
+# --- sshd ---
+# конфиг общий с ansible-agent, ключ ansible.pub монтируется из compose
+# /run/sshd: без него sshd -D не стартует
+COPY config/sshd/lab05.conf /etc/ssh/sshd_config.d/lab05.conf
+RUN mkdir -p /run/sshd /etc/ssh/keys
+
+EXPOSE 22 80
+CMD ["/usr/sbin/sshd", "-D", "-e"]

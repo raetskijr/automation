@@ -1,0 +1,2 @@
+# --- sudo для ansible: become без пароля ---
+ansible ALL=(ALL) NOPASSWD:ALL
