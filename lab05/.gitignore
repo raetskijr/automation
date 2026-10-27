@@ -7,3 +7,4 @@ secrets/*
 todo-app/vendor/
 todo-app/composer.lock
 todo-app/.phpunit.cache/
+todo-app/reports/
