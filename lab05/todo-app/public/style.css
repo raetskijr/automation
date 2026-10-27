@@ -1,0 +1,58 @@
+/* --- todo-app: оформление доски --- */
+
+/* --- цвета --- */
+:root {
+    --bar: #2f343b;
+    --line: #d9dde3;
+    --p1: #7a8a99;   /* низкий */
+    --p2: #2f7dd1;   /* обычный */
+    --p3: #d1452f;   /* высокий */
+}
+
+/* --- основа --- */
+body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #1f2328;
+    background: #f6f7f9;
+}
+
+/* --- шапка --- */
+.bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 12px 24px;
+    background: var(--bar);
+    color: #fff;
+}
+.bar h1 { margin: 0; font-size: 20px; }
+.counters { margin: 0; opacity: 0.85; }
+
+main { max-width: 860px; margin: 0 auto; padding: 16px; }
+
+/* --- форма --- */
+.form { display: grid; gap: 8px; margin-bottom: 24px; }
+.row { display: grid; grid-template-columns: 1fr 120px 90px; gap: 8px; align-items: center; }
+.row input[type="text"], .row select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; }
+button { justify-self: start; padding: 8px 16px; border: 0; border-radius: 4px; background: var(--bar); color: #fff; cursor: pointer; }
+
+/* --- доска --- */
+.board { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.column { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 12px 16px; }
+.column h2 { margin: 0 0 8px; font-size: 16px; }
+.column ul { list-style: none; margin: 0; padding: 0; }
+.column li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.column li:last-child { border-bottom: 0; }
+.done { text-decoration: line-through; color: #8b949e; }
+
+/* --- метки приоритета --- */
+.badge { display: inline-block; min-width: 64px; margin-right: 8px; padding: 1px 6px; border-radius: 10px; color: #fff; font-size: 12px; text-align: center; }
+.p1 { background: var(--p1); }
+.p2 { background: var(--p2); }
+.p3 { background: var(--p3); }
+
+/* --- узкий экран --- */
+@media (max-width: 600px) {
+    .board, .row { grid-template-columns: 1fr; }
+}
