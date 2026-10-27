@@ -1,0 +1,27 @@
+# --- vhost: каталог сайта, конфиг, включение ---
+- name: "vhost: каталог"
+  ansible.builtin.file:
+    path: "{{ site_dir }}/public"
+    state: directory
+    mode: "0755"
+
+- name: "vhost: конфиг"
+  ansible.builtin.template:
+    src: vhost.conf.j2
+    dest: "/etc/apache2/sites-available/{{ site_name }}.conf"
+    mode: "0644"
+  notify: "apache: reload"
+
+# --- ссылки в sites-enabled: то же, что a2ensite / a2dissite, но идемпотентно само по себе ---
+- name: "vhost: включить"
+  ansible.builtin.file:
+    src: "../sites-available/{{ site_name }}.conf"
+    dest: "/etc/apache2/sites-enabled/{{ site_name }}.conf"
+    state: link
+  notify: "apache: reload"
+
+- name: "vhost: убрать 000-default"
+  ansible.builtin.file:
+    path: /etc/apache2/sites-enabled/000-default.conf
+    state: absent
+  notify: "apache: reload"

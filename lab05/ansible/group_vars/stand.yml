@@ -1,0 +1,19 @@
+# --- подключение ---
+# ключ приходит из compose secrets, become для всех плейбуков группы
+ansible_ssh_private_key_file: /run/secrets/ansible_to_test
+ansible_become: true
+
+# --- пакеты ---
+php_version: "8.3"
+php_packages:
+  - "php{{ php_version }}-cli"
+  - "libapache2-mod-php{{ php_version }}"
+  - "php{{ php_version }}-mbstring"
+tool_packages:
+  - composer
+  - unzip
+
+# --- сайт ---
+site_name: todo-app
+site_dir: /srv/todo-app
+site_src: "{{ inventory_dir }}/../todo-app/"

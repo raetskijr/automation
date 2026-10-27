@@ -1,0 +1,7 @@
+# --- php: свои настройки отдельным файлом в conf.d, php.ini не трогаем ---
+- name: "php: настройки"
+  ansible.builtin.template:
+    src: php-app.ini.j2
+    dest: "/etc/php/{{ php_version }}/apache2/conf.d/90-{{ site_name }}.ini"
+    mode: "0644"
+  notify: "apache: reload"

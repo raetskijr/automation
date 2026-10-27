@@ -1,0 +1,18 @@
+# --- пакеты: apache, php, инструменты ---
+- name: "apache: пакеты"
+  ansible.builtin.apt:
+    name: apache2
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: "php: пакеты"
+  ansible.builtin.apt:
+    name: "{{ php_packages + tool_packages }}"
+    state: present
+
+# --- запуск: systemd в контейнере нет, service идёт через /etc/init.d ---
+- name: "apache: запуск"
+  ansible.builtin.service:
+    name: apache2
+    state: started
